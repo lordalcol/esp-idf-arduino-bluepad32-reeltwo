@@ -55,3 +55,6 @@ ui_*.h
 
 # Vagrant stuff
 .vagrant
+/managed_components/
+/dependencies.lock
+/sdkconfig.esp32dev
