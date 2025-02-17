@@ -9,10 +9,27 @@
 #include <ESP32Servo.h>
 #include <DFRobotDFPlayerMini.h>
 #include <CAN.h>
+#include <NetworkUdp.h>
+#include <ArduinoOTA.h>
+
+const char *ssid = "NETGEAR69";
+const char *password = "newbreeze553";
 
 #define TX_GPIO_NUM   5
 #define RX_GPIO_NUM   4
 #define LED_BUILTIN   2
+#define HALL_SENSOR 22
+
+int motor1Pin1 = 27;
+int motor1Pin2 = 26;
+int enable1Pin = 14;
+// Setting PWM properties
+const int freq = 30000;
+const int pwmChannel = 4;
+const int resolution = 8;
+
+void playNextSound();
+
 //
 // README FIRST, README FIRST, README FIRST
 //
@@ -26,6 +43,8 @@
 // Should you want to still use "Serial", you have to disable the Bluepad32's console
 // from "sdkconfig.defaults" with:
 //    CONFIG_BLUEPAD32_USB_CONSOLE_ENABLE=n
+
+void updateTime();
 
 ControllerPtr myControllers[BP32_MAX_GAMEPADS];
 Servo myservo;  // create servo object to control a servo
@@ -43,6 +62,53 @@ int servoPin2 = 19;      // GPIO pin used to connect the servo control (digital 
 // Possible ADC pins on the ESP32: 0,2,4,12-15,32-39; 34-39 are recommended for analog input
 // Possible ADC pins on the ESP32-S2: 1-20 are recommended for analog input
 
+void setMotor(int pwmVal, int pwm, int in1, int in2, int TOLERANCE_ZERO){
+	analogWrite(pwm,abs(pwmVal));
+	if(pwmVal > TOLERANCE_ZERO){
+		digitalWrite(in1,HIGH);
+		digitalWrite(in2,LOW);
+	}
+	else if(pwmVal < -TOLERANCE_ZERO){
+		digitalWrite(in1,LOW);
+		digitalWrite(in2,HIGH);
+	}
+	else{
+		digitalWrite(in1,LOW);
+		digitalWrite(in2,LOW);
+	}
+}
+
+int serialPrintLimiter = 0;
+bool printSerialLimited = false;
+u64_t lastTickTimestamp_ms = 0;
+u64_t deltatime_ms = 0;
+
+#define NECK_MAX_SPEED 245
+#define NECK_ACC 1400
+int neckSpeedCurrent = 0;
+int lastSentNeckSpeed = 0;
+int neckSpeedTarget = 0;
+
+void updateNeckSpeed() {
+	if (neckSpeedTarget != neckSpeedCurrent) {
+		int accelerationStep = (NECK_ACC * deltatime_ms) / 1000; // Scale acceleration by delta time
+
+		// Determine the direction of acceleration
+		int speedDiff = neckSpeedTarget - neckSpeedCurrent;
+		neckSpeedCurrent += min(abs(speedDiff), accelerationStep) * (speedDiff > 0 ? 1 : -1);
+	}
+
+	// Clamp neck speed within the allowed range
+	neckSpeedCurrent = max(-NECK_MAX_SPEED, min(NECK_MAX_SPEED, neckSpeedCurrent));
+
+	// Only send update if speed has changed
+	if (neckSpeedCurrent != lastSentNeckSpeed) {
+		if (printSerialLimited) Serial.printf("Neck speed target: %d current %d\n", neckSpeedTarget, neckSpeedCurrent);
+		setMotor(neckSpeedCurrent, enable1Pin, motor1Pin1, motor1Pin2, 10);
+		lastSentNeckSpeed = neckSpeedCurrent;
+	}
+}
+
 // This callback gets called any time a new gamepad is connected.
 // Up to 4 gamepads can be connected at the same time.
 void onConnectedController(ControllerPtr ctl) {
@@ -50,6 +116,7 @@ void onConnectedController(ControllerPtr ctl) {
     for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
         if (myControllers[i] == nullptr) {
             Console.printf("CALLBACK: Controller is connected, index=%d\n", i);
+			playNextSound();
             // Additionally, you can get certain gamepad properties like:
             // Model, VID, PID, BTAddr, flags, etc.
             ControllerProperties properties = ctl->getProperties();
@@ -80,6 +147,13 @@ void onDisconnectedController(ControllerPtr ctl) {
     if (!foundController) {
         Console.println("CALLBACK: Controller disconnected, but not found in myControllers");
     }
+}
+
+void setServo(Servo &servo, long val, int centerVal, int tolerance) {
+	auto v2 = val - centerVal;
+	if(v2 < tolerance && v2 > - tolerance) v2 = 0;
+	Serial.printf("Writing %d to servo\n", v2);
+	servo.write(v2 + centerVal);
 }
 
 int sound = 0;
@@ -119,22 +193,16 @@ void processGamepad(ControllerPtr ctl) {
 
     //auto val = map(ctl->axisX(), -511, 512, 0, 180);
     auto val = map(ctl->axisX(), -511, 512, 0, 180);
-    Serial.printf("Writing %d to servo\n", val);
-    myservo.write(val);                  // set the servo position according to the scaled value
+	setServo(myservo, val, 90, 3);
 
     auto vel = map(ctl->throttle(), 0, 1023, 0, 90);
-    myservo2.write(vel);
+	setServo(myservo2, vel, 45, 2);
+
+	neckSpeedTarget = map(ctl->axisRX(), -511, 512, -NECK_MAX_SPEED, NECK_MAX_SPEED);
 
     if(ctl->buttons() & BUTTON_A) {
-        Console.printf("Playing sound %d\n", sound);
-        pinMode(21, INPUT);
-        myDFPlayer.volume(30);  // Set volume value. From 0 to 30
-        myDFPlayer.play(sound++);     // Play the first mp3
-    }
-
-    if(ctl->b()) {
-        pinMode(21, INPUT);
-    }
+		playNextSound();
+	}
 
     if(ctl->x()) {
         Console.printf("Sending CAN packet\n");
@@ -163,6 +231,13 @@ void processGamepad(ControllerPtr ctl) {
     //dumpGamepad(ctl);
 }
 
+void playNextSound() {
+	Console.printf("Playing sound %d\n", sound);
+	pinMode(21, INPUT);
+	myDFPlayer.volume(30);  // Set volume value. From 0 to 30
+	myDFPlayer.play(sound++);     // Play the first mp3
+}
+
 void processControllers() {
     for (auto myController : myControllers) {
         if (myController && myController->isConnected() && myController->hasData()) {
@@ -174,11 +249,31 @@ void processControllers() {
 }
 #define RXD2 16
 #define TXD2 17
+
+#define USE_HALL_INTERRUPT 0
+
+volatile bool hallSensor = false;
+
+int hallState = 0;
+
+void IRAM_ATTR hallSensorRising() {
+	hallSensor = true;
+}
+
 // Arduino setup function. Runs in CPU 1
 void setup() {
     Console.printf("Firmware: %s\n", BP32.firmwareVersion());
     const uint8_t* addr = BP32.localBdAddress();
     Console.printf("BD Addr: %2X:%2X:%2X:%2X:%2X:%2X\n", addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+
+//	WiFi.mode(WIFI_STA);
+//	WiFi.begin(ssid, password);
+//	while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+//		Serial.println("Connection Failed! Rebooting...");
+//		delay(5000);
+//		ESP.restart();
+//	}
+	Serial.printf("Connected to %s\n", ssid);
 
     // Setup the Bluepad32 callbacks, and the default behavior for scanning or not.
     // By default, if the "startScanning" parameter is not passed, it will do the "start scanning".
@@ -237,9 +332,7 @@ void setup() {
     } else {
         Console.println(F("DFPlayer Mini online."));
         delay(15);
-        pinMode(21, INPUT);
-        myDFPlayer.volume(15);  //Set volume value. From 0 to 30
-        myDFPlayer.play(1);  //Play the first mp3
+		playNextSound();
     }
 
     CAN.setPins (RX_GPIO_NUM, TX_GPIO_NUM);
@@ -249,11 +342,26 @@ void setup() {
     }
 
 	pinMode(LED_BUILTIN, OUTPUT);
+
+	pinMode(HALL_SENSOR, INPUT);
+#if USE_HALL_INTERRUPT
+	attachInterrupt(digitalPinToInterrupt(HALL_SENSOR), hallSensorRising, RISING);
+#endif
+
+	// sets the pins as outputs:
+	pinMode(motor1Pin1, OUTPUT);
+	pinMode(motor1Pin2, OUTPUT);
+	pinMode(enable1Pin, OUTPUT);
+	// configure LEDC PWM
+	ledcAttachChannel(enable1Pin, freq, resolution, pwmChannel);
+
+	updateTime();
 }
 
 // Arduino loop function. Runs in CPU 1.
 void loop() {
-    // This call fetches all the controllers' data.
+	updateTime();
+	// This call fetches all the controllers' data.
     // Call this function in your main loop.
     bool dataUpdated = BP32.update();
     if (dataUpdated)
@@ -266,7 +374,6 @@ void loop() {
     // https://stackoverflow.com/questions/66278271/task-watchdog-got-triggered-the-tasks-did-not-reset-the-watchdog-in-time
 
     //     vTaskDelay(1);
-    delay(50);
     auto state = myDFPlayer.readState();
     if(state == 1) {
         pinMode(21, INPUT);
@@ -274,4 +381,38 @@ void loop() {
         pinMode(21, OUTPUT);
         digitalWrite(21, LOW);
     }
+
+	updateNeckSpeed();
+
+#if USE_HALL_INTERRUPT
+	if(hallSensor) {
+		hallSensor = false;
+		Serial.println("Hall sensor RISING");
+		myservo.write(180);
+		playNextSound();
+	} else {
+		myservo.write(0);
+	}
+#else
+	auto newHallState = digitalRead(HALL_SENSOR);
+	if(newHallState != hallState) {
+		Serial.printf("Hall %d", newHallState);
+		if(newHallState == 0) {
+			myservo.write(180);
+			playNextSound();
+		} else {
+			myservo.write(0);
+		}
+	}
+	hallState = newHallState;
+#endif
+	delay(15);
+}
+
+void updateTime() {
+	auto timestamp = millis();
+	deltatime_ms = timestamp - lastTickTimestamp_ms;
+	lastTickTimestamp_ms = timestamp;
+	serialPrintLimiter++;
+	printSerialLimited = (serialPrintLimiter % 10 == 0);
 }
