@@ -12,9 +12,6 @@
 #include <NetworkUdp.h>
 #include <ArduinoOTA.h>
 
-const char *ssid = "NETGEAR69";
-const char *password = "newbreeze553";
-
 #define TX_GPIO_NUM   5
 #define RX_GPIO_NUM   4
 #define LED_BUILTIN   2
@@ -88,6 +85,17 @@ u64_t deltatime_ms = 0;
 int neckSpeedCurrent = 0;
 int lastSentNeckSpeed = 0;
 int neckSpeedTarget = 0;
+volatile int neckPositionEnc = 0;
+
+#define RXD2 16
+#define TXD2 17
+#define NECK_ENCA 32
+#define NECK_ENCB 33
+#define USE_HALL_INTERRUPT 0
+
+volatile bool hallSensor = false;
+
+int hallState = 0;
 
 void updateNeckSpeed() {
 	if (neckSpeedTarget != neckSpeedCurrent) {
@@ -152,7 +160,7 @@ void onDisconnectedController(ControllerPtr ctl) {
 void setServo(Servo &servo, long val, int centerVal, int tolerance) {
 	auto v2 = val - centerVal;
 	if(v2 < tolerance && v2 > - tolerance) v2 = 0;
-	Serial.printf("Writing %d to servo\n", v2);
+	if(printSerialLimited) Serial.printf("Writing %d to servo\n", v2);
 	servo.write(v2 + centerVal);
 }
 
@@ -202,6 +210,7 @@ void processGamepad(ControllerPtr ctl) {
 
     if(ctl->buttons() & BUTTON_A) {
 		playNextSound();
+		neckPositionEnc = 0;
 	}
 
     if(ctl->x()) {
@@ -247,17 +256,19 @@ void processControllers() {
         }
     }
 }
-#define RXD2 16
-#define TXD2 17
-
-#define USE_HALL_INTERRUPT 0
-
-volatile bool hallSensor = false;
-
-int hallState = 0;
 
 void IRAM_ATTR hallSensorRising() {
 	hallSensor = true;
+}
+
+void neckEncoderRising(){
+	int b = digitalRead(NECK_ENCB);
+	if(b > 0){
+		neckPositionEnc += 1;
+	}
+	else{
+		neckPositionEnc -= 1;
+	}
 }
 
 // Arduino setup function. Runs in CPU 1
@@ -273,7 +284,7 @@ void setup() {
 //		delay(5000);
 //		ESP.restart();
 //	}
-	Serial.printf("Connected to %s\n", ssid);
+//	Serial.printf("Connected to %s\n", ssid);
 
     // Setup the Bluepad32 callbacks, and the default behavior for scanning or not.
     // By default, if the "startScanning" parameter is not passed, it will do the "start scanning".
@@ -354,6 +365,9 @@ void setup() {
 	pinMode(enable1Pin, OUTPUT);
 	// configure LEDC PWM
 	ledcAttachChannel(enable1Pin, freq, resolution, pwmChannel);
+	pinMode(NECK_ENCA,INPUT);
+	pinMode(NECK_ENCB,INPUT);
+	attachInterrupt(digitalPinToInterrupt(NECK_ENCA), neckEncoderRising, RISING);
 
 	updateTime();
 }
@@ -406,6 +420,8 @@ void loop() {
 	}
 	hallState = newHallState;
 #endif
+
+	if(printSerialLimited) Serial.printf("Neck encoder pos %d\n", neckPositionEnc);
 	delay(15);
 }
 
