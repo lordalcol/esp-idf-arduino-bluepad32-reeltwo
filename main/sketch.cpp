@@ -9,13 +9,15 @@
 #include <ESP32Servo.h>
 #include <DFRobotDFPlayerMini.h>
 #include <CAN.h>
-#include <NetworkUdp.h>
-#include <ArduinoOTA.h>
+#include "driver/pulse_cnt.h"
 
 #define TX_GPIO_NUM   5
 #define RX_GPIO_NUM   4
 #define LED_BUILTIN   2
 #define HALL_SENSOR 22
+#define ENC_TICK_PER_NECK_ROTATION (19687 / 2)
+#define ENC_TICK_LOW_LIMIT -ENC_TICK_PER_NECK_ROTATION / 2
+#define ENC_TICK_HIGH_LIMIT ENC_TICK_PER_NECK_ROTATION / 2
 
 int motor1Pin1 = 27;
 int motor1Pin2 = 26;
@@ -24,6 +26,7 @@ int enable1Pin = 14;
 const int freq = 30000;
 const int pwmChannel = 4;
 const int resolution = 8;
+pcnt_unit_handle_t pcnt_unit = NULL;
 
 void playNextSound();
 
@@ -42,6 +45,12 @@ void playNextSound();
 //    CONFIG_BLUEPAD32_USB_CONSOLE_ENABLE=n
 
 void updateTime();
+
+void setupNeckEncoder();
+
+void clearNeckPosition();
+
+void zeroFound();
 
 ControllerPtr myControllers[BP32_MAX_GAMEPADS];
 Servo myservo;  // create servo object to control a servo
@@ -81,21 +90,91 @@ u64_t lastTickTimestamp_ms = 0;
 u64_t deltatime_ms = 0;
 
 #define NECK_MAX_SPEED 245
-#define NECK_ACC 1400
+#define NECK_ACC 1100
 int neckSpeedCurrent = 0;
 int lastSentNeckSpeed = 0;
 int neckSpeedTarget = 0;
-volatile int neckPositionEnc = 0;
+float neckPositionTarget = 0;
+int neckPositionMaxSpeed = NECK_MAX_SPEED;
 
 #define RXD2 16
 #define TXD2 17
-#define NECK_ENCA 32
-#define NECK_ENCB 33
-#define USE_HALL_INTERRUPT 0
+#define EXAMPLE_EC11_GPIO_A 32
+#define EXAMPLE_EC11_GPIO_B 33
+#define USE_HALL_INTERRUPT 1
+bool neckZeroFound = false;
+long neckPositionOverflow = 0;
 
 volatile bool hallSensor = false;
 
 int hallState = 0;
+
+long prevT = 0;
+float eprev = 0;
+float eintegral = 0;
+
+float shortestAngleDifference(float angle1, float angle2) {
+	float delta = fmod((angle2 - angle1 + 180), 360) - 180;
+	return (delta < -180) ? delta + 360 : delta;
+}
+
+void updateNeckPosition(float currentPos) {
+	int e = shortestAngleDifference(neckPositionTarget, currentPos);
+	int dir = e >= 0 ? 1 : -1;
+	int delta = abs(e);
+	if(delta <= 1) {
+		neckSpeedTarget = 0;
+	} else {
+		neckSpeedTarget = dir * map(delta, 0, 180, 25, NECK_MAX_SPEED);
+	}
+	if(printSerialLimited) Serial.printf("dir %d, delta %d, neckSpeedTarget %d\n", dir, delta, neckSpeedTarget);
+}
+
+void updateNeckPositionPID(float currentPos) {
+
+	// PID constants
+	float kp = 2;
+	float kd = 0.025; //0.025;
+	float ki = 0.0;
+
+	// time difference
+	long currT = micros();
+	float deltaT = ((float) (currT - prevT))/( 1.0e6f );
+	prevT = currT;
+
+	// error
+	int e = shortestAngleDifference(neckPositionTarget, currentPos);
+
+	// derivative
+	float dedt = (e-eprev)/(deltaT);
+
+	// integral
+	eintegral = eintegral + e*deltaT;
+
+	// control signal
+	float u = kp*e + kd*dedt + ki*eintegral;
+
+	// motor power
+	float pwr = fabs(u);
+	if( pwr > neckPositionMaxSpeed ){
+		pwr = neckPositionMaxSpeed;
+	}
+	if(pwr < 30) {
+		pwr = 70;
+	}
+	Serial.printf("Pwr %.2f\n", pwr);
+
+	// motor direction
+	int dir = 1;
+	if(u<0){
+		dir = -1;
+	}
+
+	neckSpeedTarget = pwr * dir;
+
+	// store previous error
+	eprev = e;
+}
 
 void updateNeckSpeed() {
 	if (neckSpeedTarget != neckSpeedCurrent) {
@@ -111,8 +190,8 @@ void updateNeckSpeed() {
 
 	// Only send update if speed has changed
 	if (neckSpeedCurrent != lastSentNeckSpeed) {
-		if (printSerialLimited) Serial.printf("Neck speed target: %d current %d\n", neckSpeedTarget, neckSpeedCurrent);
-		setMotor(neckSpeedCurrent, enable1Pin, motor1Pin1, motor1Pin2, 10);
+		Serial.printf("Neck speed target: %d current %d\n", neckSpeedTarget, neckSpeedCurrent);
+		setMotor(neckSpeedCurrent, enable1Pin, motor1Pin1, motor1Pin2, 5);
 		lastSentNeckSpeed = neckSpeedCurrent;
 	}
 }
@@ -160,8 +239,9 @@ void onDisconnectedController(ControllerPtr ctl) {
 void setServo(Servo &servo, long val, int centerVal, int tolerance) {
 	auto v2 = val - centerVal;
 	if(v2 < tolerance && v2 > - tolerance) v2 = 0;
-	if(printSerialLimited) Serial.printf("Writing %d to servo\n", v2);
-	servo.write(v2 + centerVal);
+	v2 = v2 + centerVal;
+	if(printSerialLimited) Serial.printf("Writing %ld [%d] to servo\n", v2, centerVal);
+	servo.write(v2);
 }
 
 int sound = 0;
@@ -206,11 +286,19 @@ void processGamepad(ControllerPtr ctl) {
     auto vel = map(ctl->throttle(), 0, 1023, 0, 90);
 	setServo(myservo2, vel, 45, 2);
 
-	neckSpeedTarget = map(ctl->axisRX(), -511, 512, -NECK_MAX_SPEED, NECK_MAX_SPEED);
-
+	if(neckZeroFound) {
+		//neckSpeedTarget = map(ctl->axisRX(), -511, 512, -NECK_MAX_SPEED, NECK_MAX_SPEED);
+		auto x = ctl->axisRX();
+		auto y = ctl->axisRY();
+		float mag = sqrt((float)(x * x + y * y));
+		if(mag > 300) {
+			neckPositionMaxSpeed = map(mag, 0, 720, 50, NECK_MAX_SPEED);
+			neckPositionTarget = atan2(x, -y) * 180 / PI;
+			Serial.printf("Angle: %.2f speed %d\n", neckPositionTarget, neckPositionMaxSpeed);
+		}
+	}
     if(ctl->buttons() & BUTTON_A) {
 		playNextSound();
-		neckPositionEnc = 0;
 	}
 
     if(ctl->x()) {
@@ -240,6 +328,14 @@ void processGamepad(ControllerPtr ctl) {
     //dumpGamepad(ctl);
 }
 
+void clearNeckPosition() {
+	neckZeroFound = true;
+	Serial.printf("clear pcnt unit\n");
+	ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
+	neckPositionOverflow = 0;
+	neckPositionTarget = 0;
+}
+
 void playNextSound() {
 	Console.printf("Playing sound %d\n", sound);
 	pinMode(21, INPUT);
@@ -259,16 +355,6 @@ void processControllers() {
 
 void IRAM_ATTR hallSensorRising() {
 	hallSensor = true;
-}
-
-void neckEncoderRising(){
-	int b = digitalRead(NECK_ENCB);
-	if(b > 0){
-		neckPositionEnc += 1;
-	}
-	else{
-		neckPositionEnc -= 1;
-	}
 }
 
 // Arduino setup function. Runs in CPU 1
@@ -365,11 +451,87 @@ void setup() {
 	pinMode(enable1Pin, OUTPUT);
 	// configure LEDC PWM
 	ledcAttachChannel(enable1Pin, freq, resolution, pwmChannel);
-	pinMode(NECK_ENCA,INPUT);
-	pinMode(NECK_ENCB,INPUT);
-	attachInterrupt(digitalPinToInterrupt(NECK_ENCA), neckEncoderRising, RISING);
+
+	setupNeckEncoder();
 
 	updateTime();
+}
+
+
+static bool example_pcnt_on_reach(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx)
+{
+	BaseType_t high_task_wakeup;
+	QueueHandle_t queue = (QueueHandle_t)user_ctx;
+
+	// Increment overflow counter on overflow
+	if (edata->watch_point_value == ENC_TICK_HIGH_LIMIT) {
+		neckPositionOverflow += ENC_TICK_HIGH_LIMIT;
+	}
+	if (edata->watch_point_value == ENC_TICK_LOW_LIMIT) {
+		neckPositionOverflow += ENC_TICK_LOW_LIMIT;
+	}
+//	if (edata->watch_point_value == 0) {
+//		if (edata->zero_cross_mode == PCNT_UNIT_ZERO_CROSS_NEG_POS) {
+//			neckPositionOverflow += 1;
+//		} else if (edata->zero_cross_mode == PCNT_UNIT_ZERO_CROSS_POS_NEG) {
+//			neckPositionOverflow -= 1;
+//		} if (edata->zero_cross_mode == PCNT_UNIT_ZERO_CROSS_NEG_ZERO) {
+//			neckPositionOverflow += 1;
+//		} if (edata->zero_cross_mode == PCNT_UNIT_ZERO_CROSS_POS_ZERO) {
+//			//neckPositionOverflow -= 1;
+//		}
+//	}
+
+	// send event data to queue, from this interrupt callback
+	xQueueSendFromISR(queue, &(edata->watch_point_value), &high_task_wakeup);
+	return (high_task_wakeup == pdTRUE);
+}
+QueueHandle_t queue = xQueueCreate(10, sizeof(int));
+
+void setupNeckEncoder() {
+	pcnt_unit_config_t unit_config = {
+			.low_limit = ENC_TICK_LOW_LIMIT,
+			.high_limit = ENC_TICK_HIGH_LIMIT,
+	};
+	unit_config.flags.accum_count = 0;
+	ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &pcnt_unit));
+
+	pcnt_glitch_filter_config_t filter_config = {
+			.max_glitch_ns = 1000,
+	};
+	ESP_ERROR_CHECK(pcnt_unit_set_glitch_filter(pcnt_unit, &filter_config));
+
+	pcnt_chan_config_t chan_a_config = {
+			.edge_gpio_num = EXAMPLE_EC11_GPIO_A,
+			.level_gpio_num = EXAMPLE_EC11_GPIO_B,
+	};
+	pcnt_channel_handle_t pcnt_chan_a = NULL;
+	ESP_ERROR_CHECK(pcnt_new_channel(pcnt_unit, &chan_a_config, &pcnt_chan_a));
+	pcnt_chan_config_t chan_b_config = {
+			.edge_gpio_num = EXAMPLE_EC11_GPIO_B,
+			.level_gpio_num = EXAMPLE_EC11_GPIO_A,
+	};
+	pcnt_channel_handle_t pcnt_chan_b = NULL;
+	ESP_ERROR_CHECK(pcnt_new_channel(pcnt_unit, &chan_b_config, &pcnt_chan_b));
+
+	ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE));
+	ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
+	ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_b, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_DECREASE));
+	ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_b, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
+	ESP_ERROR_CHECK(pcnt_unit_add_watch_point(pcnt_unit, unit_config.high_limit));
+	ESP_ERROR_CHECK(pcnt_unit_add_watch_point(pcnt_unit, unit_config.low_limit));
+	//ESP_ERROR_CHECK(pcnt_unit_add_watch_point(pcnt_unit, 0));
+	pcnt_event_callbacks_t cbs = {
+			.on_reach = example_pcnt_on_reach,
+	};
+	ESP_ERROR_CHECK(pcnt_unit_register_event_callbacks(pcnt_unit, &cbs, queue));
+
+	ESP_ERROR_CHECK(pcnt_unit_enable(pcnt_unit));
+	ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
+	ESP_ERROR_CHECK(pcnt_unit_start(pcnt_unit));
+
+	neckSpeedTarget = 100;
+	updateNeckSpeed();
 }
 
 // Arduino loop function. Runs in CPU 1.
@@ -398,31 +560,47 @@ void loop() {
 
 	updateNeckSpeed();
 
-#if USE_HALL_INTERRUPT
-	if(hallSensor) {
-		hallSensor = false;
-		Serial.println("Hall sensor RISING");
-		myservo.write(180);
-		playNextSound();
-	} else {
-		myservo.write(0);
-	}
-#else
-	auto newHallState = digitalRead(HALL_SENSOR);
-	if(newHallState != hallState) {
-		Serial.printf("Hall %d", newHallState);
-		if(newHallState == 0) {
-			myservo.write(180);
-			playNextSound();
-		} else {
-			myservo.write(0);
-		}
-	}
-	hallState = newHallState;
-#endif
+	if(!neckZeroFound) {
 
-	if(printSerialLimited) Serial.printf("Neck encoder pos %d\n", neckPositionEnc);
+#if USE_HALL_INTERRUPT
+		if(hallSensor) {
+			hallSensor = false;
+			detachInterrupt(digitalPinToInterrupt(HALL_SENSOR));
+			zeroFound();
+		}
+#else
+		auto newHallState = digitalRead(HALL_SENSOR);
+		if (newHallState != hallState) {
+			Serial.printf("Hall %d", newHallState);
+			if (newHallState == 0) {
+				zeroFound();
+			} else {
+				myservo.write(0);
+			}
+		}
+		hallState = newHallState;
+#endif
+	}
+
+	//if(printSerialLimited) {
+		int pulse_count = 0;
+		ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
+		auto tot = neckPositionOverflow + pulse_count;
+		auto rot = tot / ENC_TICK_PER_NECK_ROTATION;
+		auto deg = 360.0f * (float) (tot % ENC_TICK_PER_NECK_ROTATION) / (float) (ENC_TICK_PER_NECK_ROTATION);
+		if(printSerialLimited) Serial.printf("Pulse count: ticks:%d overflowed:%ld total:%ld rot: %ld deg: %.2f (target %.2f)\n", pulse_count, neckPositionOverflow, neckPositionOverflow + pulse_count, rot, deg, neckPositionTarget);
+		//}
+	if(neckZeroFound) {
+		updateNeckPosition(deg);
+	}
 	delay(15);
+}
+
+void zeroFound() {
+	clearNeckPosition();
+	neckSpeedTarget = 0;
+	updateNeckSpeed();
+	playNextSound();
 }
 
 void updateTime() {

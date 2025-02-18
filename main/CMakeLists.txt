@@ -5,5 +5,6 @@ set(srcs
 set(requires "bluepad32" "bluepad32_arduino" "arduino" "btstack")
 
 idf_component_register(SRCS "${srcs}"
+                    PRIV_REQUIRES esp_driver_pcnt esp_driver_gpio
                     INCLUDE_DIRS "."
                     REQUIRES "${requires}" "ESP32Servo" "DFRobotDFPlayerMini" "arduino-CAN")
