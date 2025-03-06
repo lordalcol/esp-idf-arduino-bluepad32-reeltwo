@@ -7,21 +7,44 @@
 #include <Arduino.h>
 #include <Bluepad32.h>
 #include <ESP32Servo.h>
-#include <DFRobotDFPlayerMini.h>
-#include <CAN.h>
 #include "driver/pulse_cnt.h"
+#include "../components/arduino-CAN/src/CAN.h"
+#include "../components/Adafruit_Soundboard_library/Adafruit_Soundboard.h"
 
-#define TX_GPIO_NUM   5
-#define RX_GPIO_NUM   4
-#define LED_BUILTIN   2
-#define HALL_SENSOR 22
 #define ENC_TICK_PER_NECK_ROTATION (19687 / 2)
 #define ENC_TICK_LOW_LIMIT -ENC_TICK_PER_NECK_ROTATION / 2
 #define ENC_TICK_HIGH_LIMIT ENC_TICK_PER_NECK_ROTATION / 2
 
-int motor1Pin1 = 27;
-int motor1Pin2 = 26;
-int enable1Pin = 14;
+bool soundAvailable = false;
+
+#define PIN_CLK   0
+#define PIN_SDD   0
+#define PIN_SDI   0
+
+#define PIN_AUDIO_RESET   15
+#define PIN_CAN_TX   4
+#define PIN_CAN_RX   16
+#define PIN_SENSOR0_UNUSED 33
+#define PIN_SENSOR1_UNUSED 32
+#define PIN_SENSOR2_UNUSED 35
+#define PIN_HALL_SENSOR 34
+int motor1Pin1 = 11;
+int motor1Pin2 = 10;
+int motor1pwm = 9;
+#define TXD2 17
+#define RXD2 5
+HardwareSerial dfSD(1);
+// Possible PWM GPIO pins on the ESP32: 0(used by on-board button),2,4,5(used by on-board LED),12-19,21-23,25-27,32-33
+// Possible PWM GPIO pins on the ESP32-S2: 0(used by on-board button),1-17,18(used by on-board LED),19-21,26,33-42
+// Possible PWM GPIO pins on the ESP32-S3: 0(used by on-board button),1-21,35-45,47,48(used by on-board LED)
+// Possible PWM GPIO pins on the ESP32-C3: 0(used by on-board button),1-7,8(used by on-board LED),9-10,18-21
+#define PIN_SERVO1 18      // GPIO pin used to connect the servo control (digital out)
+#define PIN_SERVO2 19      // GPIO pin used to connect the servo control (digital out)
+// Possible ADC pins on the ESP32: 0,2,4,12-15,32-39; 34-39 are recommended for analog input
+// Possible ADC pins on the ESP32-S2: 1-20 are recommended for analog input
+#define EXAMPLE_EC11_GPIO_A 32
+#define EXAMPLE_EC11_GPIO_B 33
+
 // Setting PWM properties
 const int freq = 30000;
 const int pwmChannel = 4;
@@ -44,29 +67,11 @@ void playNextSound();
 // from "sdkconfig.defaults" with:
 //    CONFIG_BLUEPAD32_USB_CONSOLE_ENABLE=n
 
-void updateTime();
-
-void setupNeckEncoder();
-
-void clearNeckPosition();
-
-void zeroFound();
-
 ControllerPtr myControllers[BP32_MAX_GAMEPADS];
 Servo myservo;  // create servo object to control a servo
 Servo myservo2;  // create servo object to control a servo
 
-HardwareSerial dfSD(1);
-DFRobotDFPlayerMini myDFPlayer;
-
-// Possible PWM GPIO pins on the ESP32: 0(used by on-board button),2,4,5(used by on-board LED),12-19,21-23,25-27,32-33
-// Possible PWM GPIO pins on the ESP32-S2: 0(used by on-board button),1-17,18(used by on-board LED),19-21,26,33-42
-// Possible PWM GPIO pins on the ESP32-S3: 0(used by on-board button),1-21,35-45,47,48(used by on-board LED)
-// Possible PWM GPIO pins on the ESP32-C3: 0(used by on-board button),1-7,8(used by on-board LED),9-10,18-21
-int servoPin = 18;      // GPIO pin used to connect the servo control (digital out)
-int servoPin2 = 19;      // GPIO pin used to connect the servo control (digital out)
-// Possible ADC pins on the ESP32: 0,2,4,12-15,32-39; 34-39 are recommended for analog input
-// Possible ADC pins on the ESP32-S2: 1-20 are recommended for analog input
+Adafruit_Soundboard sfx = Adafruit_Soundboard(&dfSD, NULL, PIN_AUDIO_RESET);
 
 void setMotor(int pwmVal, int pwm, int in1, int in2, int TOLERANCE_ZERO){
 	analogWrite(pwm,abs(pwmVal));
@@ -96,22 +101,56 @@ int lastSentNeckSpeed = 0;
 int neckSpeedTarget = 0;
 float neckPositionTarget = 0;
 int neckPositionMaxSpeed = NECK_MAX_SPEED;
-
-#define RXD2 16
-#define TXD2 17
-#define EXAMPLE_EC11_GPIO_A 32
-#define EXAMPLE_EC11_GPIO_B 33
-#define USE_HALL_INTERRUPT 1
 bool neckZeroFound = false;
 long neckPositionOverflow = 0;
 
 volatile bool hallSensor = false;
-
-int hallState = 0;
-
 long prevT = 0;
 float eprev = 0;
 float eintegral = 0;
+
+void updateNeckSpeed() {
+	if (neckSpeedTarget != neckSpeedCurrent) {
+		int accelerationStep = (NECK_ACC * deltatime_ms) / 1000; // Scale acceleration by delta time
+
+		// Determine the direction of acceleration
+		int speedDiff = neckSpeedTarget - neckSpeedCurrent;
+		neckSpeedCurrent += min(abs(speedDiff), accelerationStep) * (speedDiff > 0 ? 1 : -1);
+	}
+
+	// Clamp neck speed within the allowed range
+	neckSpeedCurrent = max(-NECK_MAX_SPEED, min(NECK_MAX_SPEED, neckSpeedCurrent));
+
+	// Only send update if speed has changed
+	if (neckSpeedCurrent != lastSentNeckSpeed) {
+		Serial.printf("Neck speed target: %d current %d\n", neckSpeedTarget, neckSpeedCurrent);
+		setMotor(neckSpeedCurrent, motor1pwm, motor1Pin1, motor1Pin2, 5);
+		lastSentNeckSpeed = neckSpeedCurrent;
+	}
+}
+
+void clearNeckPosition() {
+	neckZeroFound = true;
+	Serial.printf("clear pcnt unit\n");
+	ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
+	neckPositionOverflow = 0;
+	neckPositionTarget = 0;
+}
+
+void zeroFound() {
+	clearNeckPosition();
+	neckSpeedTarget = 0;
+	updateNeckSpeed();
+	playNextSound();
+}
+
+void updateTime() {
+	auto timestamp = millis();
+	deltatime_ms = timestamp - lastTickTimestamp_ms;
+	lastTickTimestamp_ms = timestamp;
+	serialPrintLimiter++;
+	printSerialLimited = (serialPrintLimiter % 10 == 0);
+}
 
 float shortestAngleDifference(float angle1, float angle2) {
 	float delta = fmod((angle2 - angle1 + 180), 360) - 180;
@@ -127,7 +166,7 @@ void updateNeckPosition(float currentPos) {
 	} else {
 		neckSpeedTarget = dir * map(delta, 0, 180, 25, NECK_MAX_SPEED);
 	}
-	if(printSerialLimited) Serial.printf("dir %d, delta %d, neckSpeedTarget %d\n", dir, delta, neckSpeedTarget);
+	//if(printSerialLimited) Serial.printf("dir %d, delta %d, neckSpeedTarget %d\n", dir, delta, neckSpeedTarget);
 }
 
 void updateNeckPositionPID(float currentPos) {
@@ -174,26 +213,6 @@ void updateNeckPositionPID(float currentPos) {
 
 	// store previous error
 	eprev = e;
-}
-
-void updateNeckSpeed() {
-	if (neckSpeedTarget != neckSpeedCurrent) {
-		int accelerationStep = (NECK_ACC * deltatime_ms) / 1000; // Scale acceleration by delta time
-
-		// Determine the direction of acceleration
-		int speedDiff = neckSpeedTarget - neckSpeedCurrent;
-		neckSpeedCurrent += min(abs(speedDiff), accelerationStep) * (speedDiff > 0 ? 1 : -1);
-	}
-
-	// Clamp neck speed within the allowed range
-	neckSpeedCurrent = max(-NECK_MAX_SPEED, min(NECK_MAX_SPEED, neckSpeedCurrent));
-
-	// Only send update if speed has changed
-	if (neckSpeedCurrent != lastSentNeckSpeed) {
-		Serial.printf("Neck speed target: %d current %d\n", neckSpeedTarget, neckSpeedCurrent);
-		setMotor(neckSpeedCurrent, enable1Pin, motor1Pin1, motor1Pin2, 5);
-		lastSentNeckSpeed = neckSpeedCurrent;
-	}
 }
 
 // This callback gets called any time a new gamepad is connected.
@@ -244,7 +263,7 @@ void setServo(Servo &servo, long val, int centerVal, int tolerance) {
 	servo.write(v2);
 }
 
-int sound = 0;
+int sound = 1;
 
 void dumpGamepad(ControllerPtr ctl) {
     Console.printf(
@@ -273,11 +292,6 @@ void processGamepad(ControllerPtr ctl) {
     // There are different ways to query whether a button is pressed.
     // By query each button individually:
     //  a(), b(), x(), y(), l1(), etc...
-//    if (ctl->a()) {
-//		digitalWrite(LED_BUILTIN, LOW);
-//	} else {
-//		digitalWrite(LED_BUILTIN, HIGH);
-//	}
 
     //auto val = map(ctl->axisX(), -511, 512, 0, 180);
     auto val = map(ctl->axisX(), -511, 512, 0, 180);
@@ -328,19 +342,28 @@ void processGamepad(ControllerPtr ctl) {
     //dumpGamepad(ctl);
 }
 
-void clearNeckPosition() {
-	neckZeroFound = true;
-	Serial.printf("clear pcnt unit\n");
-	ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
-	neckPositionOverflow = 0;
-	neckPositionTarget = 0;
-}
-
 void playNextSound() {
-	Console.printf("Playing sound %d\n", sound);
-	pinMode(21, INPUT);
-	myDFPlayer.volume(30);  // Set volume value. From 0 to 30
-	myDFPlayer.play(sound++);     // Play the first mp3
+	if(soundAvailable) {
+//		uint8_t files = sfx.listFiles();
+//
+//		Serial.println("File Listing");
+//		Serial.println("========================");
+//		Serial.println();
+//		Serial.print("Found "); Serial.print(files); Serial.println(" Files");
+//		for (uint8_t f=0; f<files; f++) {
+//			Serial.print(f);
+//			Serial.print("\tname: "); Serial.print(sfx.fileName(f));
+//			Serial.print("\tsize: "); Serial.println(sfx.fileSize(f));
+//		}
+//		Serial.println("========================");
+
+		Console.printf("Playing sound %d\n", sound);
+//		if (! sfx.playTrack((uint8_t)sound) ) {
+//			Serial.println("Failed to play track?");
+//		}
+		sfx.playTrackAsync((uint8_t)sound);
+		sound++;
+	}
 }
 
 void processControllers() {
@@ -357,106 +380,27 @@ void IRAM_ATTR hallSensorRising() {
 	hallSensor = true;
 }
 
-// Arduino setup function. Runs in CPU 1
-void setup() {
-    Console.printf("Firmware: %s\n", BP32.firmwareVersion());
-    const uint8_t* addr = BP32.localBdAddress();
-    Console.printf("BD Addr: %2X:%2X:%2X:%2X:%2X:%2X\n", addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+void setupSound() {
+	Serial.begin(115200);
+	dfSD.begin(9600, SERIAL_8N1, RXD2, TXD2);
+	if (!sfx.reset()) {
+		Serial.println("SFX Not found");
+		delay(3000);
+		return;
+	}
+	Serial.println("SFX board found");
+	soundAvailable = true;
 
-//	WiFi.mode(WIFI_STA);
-//	WiFi.begin(ssid, password);
-//	while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-//		Serial.println("Connection Failed! Rebooting...");
-//		delay(5000);
-//		ESP.restart();
-//	}
-//	Serial.printf("Connected to %s\n", ssid);
-
-    // Setup the Bluepad32 callbacks, and the default behavior for scanning or not.
-    // By default, if the "startScanning" parameter is not passed, it will do the "start scanning".
-    // Notice that "Start scanning" will try to auto-connect to devices that are compatible with Bluepad32.
-    // E.g: if a Gamepad, keyboard or mouse are detected, it will try to auto connect to them.
-    bool startScanning = true;
-    BP32.setup(&onConnectedController, &onDisconnectedController, startScanning);
-
-    // Notice that scanning can be stopped / started at any time by calling:
-    // BP32.enableNewBluetoothConnections(enabled);
-
-    // "forgetBluetoothKeys()" should be called when the user performs
-    // a "device factory reset", or similar.
-    // Calling "forgetBluetoothKeys" in setup() just as an example.
-    // Forgetting Bluetooth keys prevents "paired" gamepads to reconnect.
-    // But it might also fix some connection / re-connection issues.
-    BP32.forgetBluetoothKeys();
-
-    // Enables mouse / touchpad support for gamepads that support them.
-    // When enabled, controllers like DualSense and DualShock4 generate two connected devices:
-    // - First one: the gamepad
-    // - Second one, which is a "virtual device", is a mouse.
-    // By default, it is disabled.
-    BP32.enableVirtualDevice(false);
-
-    // Enables the BLE Service in Bluepad32.
-    // This service allows clients, like a mobile app, to setup and see the state of Bluepad32.
-    // By default, it is disabled.
-    BP32.enableBLEService(false);
-
-    // Allow allocation of all timers
-    ESP32PWM::allocateTimer(0);
-    ESP32PWM::allocateTimer(1);
-    ESP32PWM::allocateTimer(2);
-    ESP32PWM::allocateTimer(3);
-    myservo.setPeriodHertz(50);// Standard 50hz servo
-    myservo.attach(servoPin, 500, 2400);   // attaches the servo on pin 18 to the servo object
-                                          // using SG90 servo min/max of 500us and 2400us
-                                          // for MG995 large servo, use 1000us and 2000us,
-                                          // which are the defaults, so this line could be
-                                          // "myservo.attach(servoPin);"
-    myservo2.attach(servoPin2, 1000, 2000);
-
-    pinMode(21, OUTPUT);
-    digitalWrite(21, LOW);
-
-    Serial.begin(115200);
-    dfSD.begin(9600, SERIAL_8N1, RXD2, TXD2);
-    Console.println(F("DFRobot DFPlayer Mini Demo"));
-    Console.println(F("Initializing DFPlayer ... (May take 3~5 seconds)"));
-
-    if (!myDFPlayer.begin(dfSD, true, true)) {
-        Console.println(F("Unable to begin:"));
-        Console.println(F("1.Please recheck the connection!"));
-        Console.println(F("2.Please insert the SD card!"));
-    } else {
-        Console.println(F("DFPlayer Mini online."));
-        delay(15);
-		playNextSound();
-    }
-
-    CAN.setPins (RX_GPIO_NUM, TX_GPIO_NUM);
-    if (!CAN.begin(100E3)) {
-        Console.println("Starting CAN failed!");
-        delay(2000);
-    }
-
-	pinMode(LED_BUILTIN, OUTPUT);
-
-	pinMode(HALL_SENSOR, INPUT);
-#if USE_HALL_INTERRUPT
-	attachInterrupt(digitalPinToInterrupt(HALL_SENSOR), hallSensorRising, RISING);
-#endif
-
-	// sets the pins as outputs:
-	pinMode(motor1Pin1, OUTPUT);
-	pinMode(motor1Pin2, OUTPUT);
-	pinMode(enable1Pin, OUTPUT);
-	// configure LEDC PWM
-	ledcAttachChannel(enable1Pin, freq, resolution, pwmChannel);
-
-	setupNeckEncoder();
-
-	updateTime();
+	uint16_t v = 0;
+	while(v < 200) {
+		if (!(v = sfx.volUp())) {
+			Serial.println("Failed to adjust");
+		} else {
+			Serial.print("Volume: ");
+			Serial.println(v);
+		}
+	}
 }
-
 
 static bool example_pcnt_on_reach(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx)
 {
@@ -534,6 +478,92 @@ void setupNeckEncoder() {
 	updateNeckSpeed();
 }
 
+void setupBluetooth() {
+	const uint8_t* addr = BP32.localBdAddress();
+	Console.printf("BD Addr: %2X:%2X:%2X:%2X:%2X:%2X\n", addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+
+	// Setup the Bluepad32 callbacks, and the default behavior for scanning or not.
+	// By default, if the "startScanning" parameter is not passed, it will do the "start scanning".
+	// Notice that "Start scanning" will try to auto-connect to devices that are compatible with Bluepad32.
+	// E.g: if a Gamepad, keyboard or mouse are detected, it will try to auto connect to them.
+	bool startScanning = true;
+	BP32.setup(&onConnectedController, &onDisconnectedController, startScanning);
+
+	// Notice that scanning can be stopped / started at any time by calling:
+	// BP32.enableNewBluetoothConnections(enabled);
+
+	// "forgetBluetoothKeys()" should be called when the user performs
+	// a "device factory reset", or similar.
+	// Calling "forgetBluetoothKeys" in setup() just as an example.
+	// Forgetting Bluetooth keys prevents "paired" gamepads to reconnect.
+	// But it might also fix some connection / re-connection issues.
+	BP32.forgetBluetoothKeys();
+
+	// Enables mouse / touchpad support for gamepads that support them.
+	// When enabled, controllers like DualSense and DualShock4 generate two connected devices:
+	// - First one: the gamepad
+	// - Second one, which is a "virtual device", is a mouse.
+	// By default, it is disabled.
+	BP32.enableVirtualDevice(false);
+
+	// Enables the BLE Service in Bluepad32.
+	// This service allows clients, like a mobile app, to setup and see the state of Bluepad32.
+	// By default, it is disabled.
+	BP32.enableBLEService(false);
+}
+
+void setupServos() {
+	// Allow allocation of all timers
+	ESP32PWM::allocateTimer(0);
+	ESP32PWM::allocateTimer(1);
+	ESP32PWM::allocateTimer(2);
+	ESP32PWM::allocateTimer(3);
+	myservo.setPeriodHertz(50);// Standard 50hz servo
+	myservo.attach(PIN_SERVO1, 500, 2400);   // attaches the servo on pin 18 to the servo object
+	// using SG90 servo min/max of 500us and 2400us
+	// for MG995 large servo, use 1000us and 2000us,
+	// which are the defaults, so this line could be
+	// "myservo.attach(servoPin);"
+	myservo2.attach(PIN_SERVO2, 1000, 2000);
+}
+
+void setupCAN() {
+	CAN.setPins (PIN_CAN_RX, PIN_CAN_TX);
+	if (!CAN.begin(100E3)) {
+		Console.println("Starting CAN failed!");
+		delay(2000);
+	}
+}
+
+void setupNeckZeroSensor() {
+	pinMode(PIN_HALL_SENSOR, INPUT);
+#if USE_HALL_INTERRUPT
+	attachInterrupt(digitalPinToInterrupt(PIN_HALL_SENSOR), hallSensorRising, CHANGE);
+#endif
+}
+
+void setupNeckMotorDrive() {
+	// sets the pins as outputs:
+	pinMode(motor1Pin1, OUTPUT);
+	pinMode(motor1Pin2, OUTPUT);
+	pinMode(motor1pwm, OUTPUT);
+	// configure LEDC PWM
+	ledcAttachChannel(motor1pwm, freq, resolution, pwmChannel);
+}
+
+// Arduino setup function. Runs in CPU 1
+void setup() {
+    Console.printf("Firmware: %s\n", BP32.firmwareVersion());
+	setupBluetooth();
+	setupServos();
+//	setupSound();
+//	setupCAN();
+//	setupNeckZeroSensor();
+//	setupNeckMotorDrive();
+//	setupNeckEncoder();
+	updateTime();
+}
+
 // Arduino loop function. Runs in CPU 1.
 void loop() {
 	updateTime();
@@ -550,63 +580,37 @@ void loop() {
     // https://stackoverflow.com/questions/66278271/task-watchdog-got-triggered-the-tasks-did-not-reset-the-watchdog-in-time
 
     //     vTaskDelay(1);
-    auto state = myDFPlayer.readState();
-    if(state == 1) {
-        pinMode(21, INPUT);
-    } else {
-        pinMode(21, OUTPUT);
-        digitalWrite(21, LOW);
-    }
 
-	updateNeckSpeed();
+//	// Checks state of player, if playing enable amp
+//	// We now do this in hardware
+//    auto state = myDFPlayer.readState();
+//    if(state == 1) {
+//        pinMode(21, INPUT);
+//    } else {
+//        pinMode(21, OUTPUT);
+//        digitalWrite(21, LOW);
+//    }
 
-	if(!neckZeroFound) {
-
-#if USE_HALL_INTERRUPT
-		if(hallSensor) {
-			hallSensor = false;
-			detachInterrupt(digitalPinToInterrupt(HALL_SENSOR));
-			zeroFound();
-		}
-#else
-		auto newHallState = digitalRead(HALL_SENSOR);
-		if (newHallState != hallState) {
-			Serial.printf("Hall %d", newHallState);
-			if (newHallState == 0) {
-				zeroFound();
-			} else {
-				myservo.write(0);
-			}
-		}
-		hallState = newHallState;
-#endif
-	}
-
-	//if(printSerialLimited) {
-		int pulse_count = 0;
-		ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
-		auto tot = neckPositionOverflow + pulse_count;
-		auto rot = tot / ENC_TICK_PER_NECK_ROTATION;
-		auto deg = 360.0f * (float) (tot % ENC_TICK_PER_NECK_ROTATION) / (float) (ENC_TICK_PER_NECK_ROTATION);
-		if(printSerialLimited) Serial.printf("Pulse count: ticks:%d overflowed:%ld total:%ld rot: %ld deg: %.2f (target %.2f)\n", pulse_count, neckPositionOverflow, neckPositionOverflow + pulse_count, rot, deg, neckPositionTarget);
-		//}
-	if(neckZeroFound) {
-		updateNeckPosition(deg);
-	}
+//	updateNeckSpeed();
+//
+//	if(!neckZeroFound) {
+//		if(hallSensor) {
+//			hallSensor = false;
+//			detachInterrupt(digitalPinToInterrupt(PIN_HALL_SENSOR));
+//			zeroFound();
+//		}
+//	}
+//
+//	//if(printSerialLimited) {
+//		int pulse_count = 0;
+//		ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
+//		auto tot = neckPositionOverflow + pulse_count;
+//		auto rot = tot / ENC_TICK_PER_NECK_ROTATION;
+//		auto deg = 360.0f * (float) (tot % ENC_TICK_PER_NECK_ROTATION) / (float) (ENC_TICK_PER_NECK_ROTATION);
+//		//if(printSerialLimited) Serial.printf("Pulse count: ticks:%d overflowed:%ld total:%ld rot: %ld deg: %.2f (target %.2f)\n", pulse_count, neckPositionOverflow, neckPositionOverflow + pulse_count, rot, deg, neckPositionTarget);
+//		//}
+//	if(neckZeroFound) {
+//		updateNeckPosition(deg);
+//	}
 	delay(15);
-}
-
-void zeroFound() {
-	clearNeckPosition();
-	neckSpeedTarget = 0;
-	updateNeckSpeed();
-	playNextSound();
-}
-
-void updateTime() {
-	auto timestamp = millis();
-	deltatime_ms = timestamp - lastTickTimestamp_ms;
-	lastTickTimestamp_ms = timestamp;
-	serialPrintLimiter++;
-	printSerialLimited = (serialPrintLimiter % 10 == 0);
 }
