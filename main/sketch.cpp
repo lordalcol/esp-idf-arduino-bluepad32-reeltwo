@@ -11,6 +11,19 @@
 #include "../components/arduino-CAN/src/CAN.h"
 #include "../components/Adafruit_Soundboard_library/Adafruit_Soundboard.h"
 
+#include <Wire.h>
+#include "../components/esp8266-oled-ssd1306/src/SSD1306Wire.h"
+
+// for 128x64 displays:
+SSD1306Wire display(0x3c, SDA, SCL);  // ADDRESS, SDA, SCL
+// for 128x32 displays:
+// SSD1306Wire display(0x3c, SDA, SCL, GEOMETRY_128_32);  // ADDRESS, SDA, SCL, GEOMETRY_128_32 (or 128_64)
+// for using 2nd Hardware I2C (if available)
+// SSD1306Wire(0x3c, SDA, SCL, GEOMETRY_128_64, I2C_TWO); //default value is I2C_ONE if not mentioned
+// By default SD1306Wire set I2C frequency to 700000, you can use set either another frequency or skip setting the frequency by providing -1 value
+// SSD1306Wire(0x3c, SDA, SCL, GEOMETRY_128_64, I2C_ONE, 400000); //set I2C frequency to 400kHz
+// SSD1306Wire(0x3c, SDA, SCL, GEOMETRY_128_64, I2C_ONE, -1); //skip setting the I2C bus frequency
+
 #define ENC_TICK_PER_NECK_ROTATION (19687 / 2)
 #define ENC_TICK_LOW_LIMIT -ENC_TICK_PER_NECK_ROTATION / 2
 #define ENC_TICK_HIGH_LIMIT ENC_TICK_PER_NECK_ROTATION / 2
@@ -52,6 +65,137 @@ const int resolution = 8;
 pcnt_unit_handle_t pcnt_unit = NULL;
 
 void playNextSound();
+
+
+void setupOledDisplay();
+
+// Adapted from Adafruit_SSD1306
+void drawLines() {
+	for (int16_t i = 0; i < display.getWidth(); i += 4) {
+		display.drawLine(0, 0, i, display.getHeight() - 1);
+		display.display();
+		delay(10);
+	}
+	for (int16_t i = 0; i < display.getHeight(); i += 4) {
+		display.drawLine(0, 0, display.getWidth() - 1, i);
+		display.display();
+		delay(10);
+	}
+	delay(250);
+
+	display.clear();
+	for (int16_t i = 0; i < display.getWidth(); i += 4) {
+		display.drawLine(0, display.getHeight() - 1, i, 0);
+		display.display();
+		delay(10);
+	}
+	for (int16_t i = display.getHeight() - 1; i >= 0; i -= 4) {
+		display.drawLine(0, display.getHeight() - 1, display.getWidth() - 1, i);
+		display.display();
+		delay(10);
+	}
+	delay(250);
+
+	display.clear();
+	for (int16_t i = display.getWidth() - 1; i >= 0; i -= 4) {
+		display.drawLine(display.getWidth() - 1, display.getHeight() - 1, i, 0);
+		display.display();
+		delay(10);
+	}
+	for (int16_t i = display.getHeight() - 1; i >= 0; i -= 4) {
+		display.drawLine(display.getWidth() - 1, display.getHeight() - 1, 0, i);
+		display.display();
+		delay(10);
+	}
+	delay(250);
+	display.clear();
+	for (int16_t i = 0; i < display.getHeight(); i += 4) {
+		display.drawLine(display.getWidth() - 1, 0, 0, i);
+		display.display();
+		delay(10);
+	}
+	for (int16_t i = 0; i < display.getWidth(); i += 4) {
+		display.drawLine(display.getWidth() - 1, 0, i, display.getHeight() - 1);
+		display.display();
+		delay(10);
+	}
+	delay(250);
+}
+
+// Adapted from Adafruit_SSD1306
+void drawRect(void) {
+	for (int16_t i = 0; i < display.getHeight() / 2; i += 2) {
+		display.drawRect(i, i, display.getWidth() - 2 * i, display.getHeight() - 2 * i);
+		display.display();
+		delay(10);
+	}
+}
+
+// Adapted from Adafruit_SSD1306
+void fillRect(void) {
+	uint8_t color = 1;
+	for (int16_t i = 0; i < display.getHeight() / 2; i += 3) {
+		display.setColor((color % 2 == 0) ? BLACK : WHITE); // alternate colors
+		display.fillRect(i, i, display.getWidth() - i * 2, display.getHeight() - i * 2);
+		display.display();
+		delay(10);
+		color++;
+	}
+	// Reset back to WHITE
+	display.setColor(WHITE);
+}
+
+// Adapted from Adafruit_SSD1306
+void drawCircle(void) {
+	for (int16_t i = 0; i < display.getHeight(); i += 2) {
+		display.drawCircle(display.getWidth() / 2, display.getHeight() / 2, i);
+		display.display();
+		delay(10);
+	}
+	delay(1000);
+	display.clear();
+
+	// This will draw the part of the circel in quadrant 1
+	// Quadrants are numberd like this:
+	//   0010 | 0001
+	//  ------|-----
+	//   0100 | 1000
+	//
+	display.drawCircleQuads(display.getWidth() / 2, display.getHeight() / 2, display.getHeight() / 4, 0b00000001);
+	display.display();
+	delay(200);
+	display.drawCircleQuads(display.getWidth() / 2, display.getHeight() / 2, display.getHeight() / 4, 0b00000011);
+	display.display();
+	delay(200);
+	display.drawCircleQuads(display.getWidth() / 2, display.getHeight() / 2, display.getHeight() / 4, 0b00000111);
+	display.display();
+	delay(200);
+	display.drawCircleQuads(display.getWidth() / 2, display.getHeight() / 2, display.getHeight() / 4, 0b00001111);
+	display.display();
+}
+
+void printBuffer(void) {
+	// Some test data
+	const char* test[] = {
+			"Hello",
+			"World" ,
+			"----",
+			"Show off",
+			"how",
+			"the log buffer",
+			"is",
+			"working.",
+			"Even",
+			"scrolling is",
+			"working"
+	};
+	display.clear();
+	for (uint8_t i = 0; i < 11; i++) {
+		// Print to the screen
+		display.println(test[i]);
+		delay(500);
+	}
+}
 
 //
 // README FIRST, README FIRST, README FIRST
@@ -288,6 +432,18 @@ void dumpGamepad(ControllerPtr ctl) {
     );
 }
 
+bool printBufferUpdated = false;
+constexpr size_t BUFFER_SIZE = 200;
+static char buffer[BUFFER_SIZE];
+void format_to_buffer(const char* format, ...) {
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer, BUFFER_SIZE, format, args);
+	va_end(args);
+	printBufferUpdated = true;
+}
+
+
 void processGamepad(ControllerPtr ctl) {
     // There are different ways to query whether a button is pressed.
     // By query each button individually:
@@ -296,9 +452,11 @@ void processGamepad(ControllerPtr ctl) {
     //auto val = map(ctl->axisX(), -511, 512, 0, 180);
     auto val = map(ctl->axisX(), -511, 512, 0, 180);
 	setServo(myservo, val, 90, 3);
+	format_to_buffer("Servo1 = %d", (int)val);
 
     auto vel = map(ctl->throttle(), 0, 1023, 0, 90);
 	setServo(myservo2, vel, 45, 2);
+
 
 	if(neckZeroFound) {
 		//neckSpeedTarget = map(ctl->axisRX(), -511, 512, -NECK_MAX_SPEED, NECK_MAX_SPEED);
@@ -432,6 +590,7 @@ static bool example_pcnt_on_reach(pcnt_unit_handle_t unit, const pcnt_watch_even
 }
 QueueHandle_t queue = xQueueCreate(10, sizeof(int));
 
+
 void setupNeckEncoder() {
 	pcnt_unit_config_t unit_config = {
 			.low_limit = ENC_TICK_LOW_LIMIT,
@@ -551,6 +710,22 @@ void setupNeckMotorDrive() {
 	ledcAttachChannel(motor1pwm, freq, resolution, pwmChannel);
 }
 
+void setupOledDisplay() {
+	display.init();
+	display.flipScreenVertically();
+	display.setContrast(255);
+	drawLines();
+	display.clear();
+	drawRect();
+	display.clear();
+	fillRect();
+	display.clear();
+	drawCircle();
+	display.clear();
+	printBuffer();
+	display.clear();
+}
+
 // Arduino setup function. Runs in CPU 1
 void setup() {
     Console.printf("Firmware: %s\n", BP32.firmwareVersion());
@@ -562,6 +737,7 @@ void setup() {
 //	setupNeckMotorDrive();
 //	setupNeckEncoder();
 	updateTime();
+	setupOledDisplay();
 }
 
 // Arduino loop function. Runs in CPU 1.
@@ -612,5 +788,10 @@ void loop() {
 //	if(neckZeroFound) {
 //		updateNeckPosition(deg);
 //	}
+	if(printBufferUpdated) {
+		display.clear();
+		display.println(buffer);
+		printBufferUpdated = false;
+	}
 	delay(15);
 }
