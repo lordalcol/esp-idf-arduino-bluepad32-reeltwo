@@ -3,6 +3,7 @@
 // http://retro.moe/unijoysticle2
 
 #include "sdkconfig.h"
+#include "display.h"
 
 #include <Arduino.h>
 #include <Bluepad32.h>
@@ -10,19 +11,6 @@
 #include "driver/pulse_cnt.h"
 #include "../components/arduino-CAN/src/CAN.h"
 #include "../components/Adafruit_Soundboard_library/Adafruit_Soundboard.h"
-
-#include <Wire.h>
-#include "../components/esp8266-oled-ssd1306/src/SSD1306Wire.h"
-
-// for 128x64 displays:
-SSD1306Wire display(0x3c, SDA, SCL);  // ADDRESS, SDA, SCL
-// for 128x32 displays:
-// SSD1306Wire display(0x3c, SDA, SCL, GEOMETRY_128_32);  // ADDRESS, SDA, SCL, GEOMETRY_128_32 (or 128_64)
-// for using 2nd Hardware I2C (if available)
-// SSD1306Wire(0x3c, SDA, SCL, GEOMETRY_128_64, I2C_TWO); //default value is I2C_ONE if not mentioned
-// By default SD1306Wire set I2C frequency to 700000, you can use set either another frequency or skip setting the frequency by providing -1 value
-// SSD1306Wire(0x3c, SDA, SCL, GEOMETRY_128_64, I2C_ONE, 400000); //set I2C frequency to 400kHz
-// SSD1306Wire(0x3c, SDA, SCL, GEOMETRY_128_64, I2C_ONE, -1); //skip setting the I2C bus frequency
 
 #define ENC_TICK_PER_NECK_ROTATION (19687 / 2)
 #define ENC_TICK_LOW_LIMIT -ENC_TICK_PER_NECK_ROTATION / 2
@@ -64,139 +52,6 @@ const int pwmChannel = 4;
 const int resolution = 8;
 pcnt_unit_handle_t pcnt_unit = NULL;
 
-void playNextSound();
-
-
-void setupOledDisplay();
-
-// Adapted from Adafruit_SSD1306
-void drawLines() {
-	for (int16_t i = 0; i < display.getWidth(); i += 4) {
-		display.drawLine(0, 0, i, display.getHeight() - 1);
-		display.display();
-		delay(10);
-	}
-	for (int16_t i = 0; i < display.getHeight(); i += 4) {
-		display.drawLine(0, 0, display.getWidth() - 1, i);
-		display.display();
-		delay(10);
-	}
-	delay(250);
-
-	display.clear();
-	for (int16_t i = 0; i < display.getWidth(); i += 4) {
-		display.drawLine(0, display.getHeight() - 1, i, 0);
-		display.display();
-		delay(10);
-	}
-	for (int16_t i = display.getHeight() - 1; i >= 0; i -= 4) {
-		display.drawLine(0, display.getHeight() - 1, display.getWidth() - 1, i);
-		display.display();
-		delay(10);
-	}
-	delay(250);
-
-	display.clear();
-	for (int16_t i = display.getWidth() - 1; i >= 0; i -= 4) {
-		display.drawLine(display.getWidth() - 1, display.getHeight() - 1, i, 0);
-		display.display();
-		delay(10);
-	}
-	for (int16_t i = display.getHeight() - 1; i >= 0; i -= 4) {
-		display.drawLine(display.getWidth() - 1, display.getHeight() - 1, 0, i);
-		display.display();
-		delay(10);
-	}
-	delay(250);
-	display.clear();
-	for (int16_t i = 0; i < display.getHeight(); i += 4) {
-		display.drawLine(display.getWidth() - 1, 0, 0, i);
-		display.display();
-		delay(10);
-	}
-	for (int16_t i = 0; i < display.getWidth(); i += 4) {
-		display.drawLine(display.getWidth() - 1, 0, i, display.getHeight() - 1);
-		display.display();
-		delay(10);
-	}
-	delay(250);
-}
-
-// Adapted from Adafruit_SSD1306
-void drawRect(void) {
-	for (int16_t i = 0; i < display.getHeight() / 2; i += 2) {
-		display.drawRect(i, i, display.getWidth() - 2 * i, display.getHeight() - 2 * i);
-		display.display();
-		delay(10);
-	}
-}
-
-// Adapted from Adafruit_SSD1306
-void fillRect(void) {
-	uint8_t color = 1;
-	for (int16_t i = 0; i < display.getHeight() / 2; i += 3) {
-		display.setColor((color % 2 == 0) ? BLACK : WHITE); // alternate colors
-		display.fillRect(i, i, display.getWidth() - i * 2, display.getHeight() - i * 2);
-		display.display();
-		delay(10);
-		color++;
-	}
-	// Reset back to WHITE
-	display.setColor(WHITE);
-}
-
-// Adapted from Adafruit_SSD1306
-void drawCircle(void) {
-	for (int16_t i = 0; i < display.getHeight(); i += 2) {
-		display.drawCircle(display.getWidth() / 2, display.getHeight() / 2, i);
-		display.display();
-		delay(10);
-	}
-	delay(1000);
-	display.clear();
-
-	// This will draw the part of the circel in quadrant 1
-	// Quadrants are numberd like this:
-	//   0010 | 0001
-	//  ------|-----
-	//   0100 | 1000
-	//
-	display.drawCircleQuads(display.getWidth() / 2, display.getHeight() / 2, display.getHeight() / 4, 0b00000001);
-	display.display();
-	delay(200);
-	display.drawCircleQuads(display.getWidth() / 2, display.getHeight() / 2, display.getHeight() / 4, 0b00000011);
-	display.display();
-	delay(200);
-	display.drawCircleQuads(display.getWidth() / 2, display.getHeight() / 2, display.getHeight() / 4, 0b00000111);
-	display.display();
-	delay(200);
-	display.drawCircleQuads(display.getWidth() / 2, display.getHeight() / 2, display.getHeight() / 4, 0b00001111);
-	display.display();
-}
-
-void printBuffer(void) {
-	// Some test data
-	const char* test[] = {
-			"Hello",
-			"World" ,
-			"----",
-			"Show off",
-			"how",
-			"the log buffer",
-			"is",
-			"working.",
-			"Even",
-			"scrolling is",
-			"working"
-	};
-	display.clear();
-	for (uint8_t i = 0; i < 11; i++) {
-		// Print to the screen
-		display.println(test[i]);
-		delay(500);
-	}
-}
-
 //
 // README FIRST, README FIRST, README FIRST
 //
@@ -235,8 +90,10 @@ void setMotor(int pwmVal, int pwm, int in1, int in2, int TOLERANCE_ZERO){
 
 int serialPrintLimiter = 0;
 bool printSerialLimited = false;
+bool printOled = false;
 u64_t lastTickTimestamp_ms = 0;
-u64_t deltatime_ms = 0;
+u64_t lastOledUpdate = 0;
+int deltatime_ms = 0;
 
 #define NECK_MAX_SPEED 245
 #define NECK_ACC 1100
@@ -253,6 +110,33 @@ long prevT = 0;
 float eprev = 0;
 float eintegral = 0;
 
+int sound = 1;
+
+void playNextSound() {
+	if(soundAvailable) {
+//		uint8_t files = sfx.listFiles();
+//
+//		Serial.println("File Listing");
+//		Serial.println("========================");
+//		Serial.println();
+//		Serial.print("Found "); Serial.print(files); Serial.println(" Files");
+//		for (uint8_t f=0; f<files; f++) {
+//			Serial.print(f);
+//			Serial.print("\tname: "); Serial.print(sfx.fileName(f));
+//			Serial.print("\tsize: "); Serial.println(sfx.fileSize(f));
+//		}
+//		Serial.println("========================");
+
+		//Console.printf("Playing sound %d\n", sound);
+//		if (! sfx.playTrack((uint8_t)sound) ) {
+//			Serial.println("Failed to play track?");
+//		}
+		sfx.playTrackAsync((uint8_t)sound);
+		sound++;
+	}
+}
+
+
 void updateNeckSpeed() {
 	if (neckSpeedTarget != neckSpeedCurrent) {
 		int accelerationStep = (NECK_ACC * deltatime_ms) / 1000; // Scale acceleration by delta time
@@ -267,7 +151,7 @@ void updateNeckSpeed() {
 
 	// Only send update if speed has changed
 	if (neckSpeedCurrent != lastSentNeckSpeed) {
-		Serial.printf("Neck speed target: %d current %d\n", neckSpeedTarget, neckSpeedCurrent);
+		//Serial.printf("Neck speed target: %d current %d\n", neckSpeedTarget, neckSpeedCurrent);
 		setMotor(neckSpeedCurrent, motor1pwm, motor1Pin1, motor1Pin2, 5);
 		lastSentNeckSpeed = neckSpeedCurrent;
 	}
@@ -275,7 +159,7 @@ void updateNeckSpeed() {
 
 void clearNeckPosition() {
 	neckZeroFound = true;
-	Serial.printf("clear pcnt unit\n");
+	//Serial.printf("clear pcnt unit\n");
 	ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
 	neckPositionOverflow = 0;
 	neckPositionTarget = 0;
@@ -290,10 +174,14 @@ void zeroFound() {
 
 void updateTime() {
 	auto timestamp = millis();
-	deltatime_ms = timestamp - lastTickTimestamp_ms;
+	deltatime_ms = std::min(9999, (int)(timestamp - lastTickTimestamp_ms));
 	lastTickTimestamp_ms = timestamp;
 	serialPrintLimiter++;
 	printSerialLimited = (serialPrintLimiter % 10 == 0);
+	if(timestamp - lastOledUpdate > 500) {
+		printOled = true;
+		lastOledUpdate = timestamp;
+	}
 }
 
 float shortestAngleDifference(float angle1, float angle2) {
@@ -403,11 +291,9 @@ void setServo(Servo &servo, long val, int centerVal, int tolerance) {
 	auto v2 = val - centerVal;
 	if(v2 < tolerance && v2 > - tolerance) v2 = 0;
 	v2 = v2 + centerVal;
-	if(printSerialLimited) Serial.printf("Writing %ld [%d] to servo\n", v2, centerVal);
+	//if(printSerialLimited) Serial.printf(";Writing %ld [%d] to servo\n", v2, centerVal);
 	servo.write(v2);
 }
-
-int sound = 1;
 
 void dumpGamepad(ControllerPtr ctl) {
     Console.printf(
@@ -435,10 +321,10 @@ void dumpGamepad(ControllerPtr ctl) {
 bool printBufferUpdated = false;
 constexpr size_t BUFFER_SIZE = 200;
 static char buffer[BUFFER_SIZE];
-void format_to_buffer(const char* format, ...) {
+void format_to_buffer(char* buf, size_t size, const char* format, ...) {
 	va_list args;
 	va_start(args, format);
-	vsnprintf(buffer, BUFFER_SIZE, format, args);
+	vsnprintf(buf, size, format, args);
 	va_end(args);
 	printBufferUpdated = true;
 }
@@ -452,11 +338,17 @@ void processGamepad(ControllerPtr ctl) {
     //auto val = map(ctl->axisX(), -511, 512, 0, 180);
     auto val = map(ctl->axisX(), -511, 512, 0, 180);
 	setServo(myservo, val, 90, 3);
-	format_to_buffer("Servo1 = %d", (int)val);
+	format_to_buffer(buffer, BUFFER_SIZE, "Servo1 = %04d", (int)val);
+	Serial.print('$');
+	Serial.print(val - 90);
+	Serial.print(',');
 
     auto vel = map(ctl->throttle(), 0, 1023, 0, 90);
 	setServo(myservo2, vel, 45, 2);
-
+	Serial.print(vel);
+	Serial.print(',');
+	Serial.print(deltatime_ms);
+	Serial.print('\n');
 
 	if(neckZeroFound) {
 		//neckSpeedTarget = map(ctl->axisRX(), -511, 512, -NECK_MAX_SPEED, NECK_MAX_SPEED);
@@ -466,7 +358,7 @@ void processGamepad(ControllerPtr ctl) {
 		if(mag > 300) {
 			neckPositionMaxSpeed = map(mag, 0, 720, 50, NECK_MAX_SPEED);
 			neckPositionTarget = atan2(x, -y) * 180 / PI;
-			Serial.printf("Angle: %.2f speed %d\n", neckPositionTarget, neckPositionMaxSpeed);
+			//Serial.printf("Angle: %.2f speed %d\n", neckPositionTarget, neckPositionMaxSpeed);
 		}
 	}
     if(ctl->buttons() & BUTTON_A) {
@@ -500,30 +392,6 @@ void processGamepad(ControllerPtr ctl) {
     //dumpGamepad(ctl);
 }
 
-void playNextSound() {
-	if(soundAvailable) {
-//		uint8_t files = sfx.listFiles();
-//
-//		Serial.println("File Listing");
-//		Serial.println("========================");
-//		Serial.println();
-//		Serial.print("Found "); Serial.print(files); Serial.println(" Files");
-//		for (uint8_t f=0; f<files; f++) {
-//			Serial.print(f);
-//			Serial.print("\tname: "); Serial.print(sfx.fileName(f));
-//			Serial.print("\tsize: "); Serial.println(sfx.fileSize(f));
-//		}
-//		Serial.println("========================");
-
-		Console.printf("Playing sound %d\n", sound);
-//		if (! sfx.playTrack((uint8_t)sound) ) {
-//			Serial.println("Failed to play track?");
-//		}
-		sfx.playTrackAsync((uint8_t)sound);
-		sound++;
-	}
-}
-
 void processControllers() {
     for (auto myController : myControllers) {
         if (myController && myController->isConnected() && myController->hasData()) {
@@ -539,7 +407,6 @@ void IRAM_ATTR hallSensorRising() {
 }
 
 void setupSound() {
-	Serial.begin(115200);
 	dfSD.begin(9600, SERIAL_8N1, RXD2, TXD2);
 	if (!sfx.reset()) {
 		Serial.println("SFX Not found");
@@ -710,24 +577,13 @@ void setupNeckMotorDrive() {
 	ledcAttachChannel(motor1pwm, freq, resolution, pwmChannel);
 }
 
-void setupOledDisplay() {
-	display.init();
-	display.flipScreenVertically();
-	display.setContrast(255);
-	drawLines();
-	display.clear();
-	drawRect();
-	display.clear();
-	fillRect();
-	display.clear();
-	drawCircle();
-	display.clear();
-	printBuffer();
-	display.clear();
+void setupDisplay() {
+	setupOledDisplay();
 }
 
 // Arduino setup function. Runs in CPU 1
 void setup() {
+	Serial.begin(115200);
     Console.printf("Firmware: %s\n", BP32.firmwareVersion());
 	setupBluetooth();
 	setupServos();
@@ -737,25 +593,25 @@ void setup() {
 //	setupNeckMotorDrive();
 //	setupNeckEncoder();
 	updateTime();
-	setupOledDisplay();
+	setupDisplay();
 }
 
 // Arduino loop function. Runs in CPU 1.
 void loop() {
 	updateTime();
 	// This call fetches all the controllers' data.
-    // Call this function in your main loop.
-    bool dataUpdated = BP32.update();
-    if (dataUpdated)
-        processControllers();
+	// Call this function in your main loop.
+	bool dataUpdated = BP32.update();
+	if (dataUpdated)
+		processControllers();
 
-    // The main loop must have some kind of "yield to lower priority task" event.
-    // Otherwise, the watchdog will get triggered.
-    // If your main loop doesn't have one, just add a simple `vTaskDelay(1)`.
-    // Detailed info here:
-    // https://stackoverflow.com/questions/66278271/task-watchdog-got-triggered-the-tasks-did-not-reset-the-watchdog-in-time
+	// The main loop must have some kind of "yield to lower priority task" event.
+	// Otherwise, the watchdog will get triggered.
+	// If your main loop doesn't have one, just add a simple `vTaskDelay(1)`.
+	// Detailed info here:
+	// https://stackoverflow.com/questions/66278271/task-watchdog-got-triggered-the-tasks-did-not-reset-the-watchdog-in-time
 
-    //     vTaskDelay(1);
+	//     vTaskDelay(1);
 
 //	// Checks state of player, if playing enable amp
 //	// We now do this in hardware
@@ -788,10 +644,18 @@ void loop() {
 //	if(neckZeroFound) {
 //		updateNeckPosition(deg);
 //	}
-	if(printBufferUpdated) {
-		display.clear();
-		display.println(buffer);
-		printBufferUpdated = false;
+	if(printOled) {
+		if (printBufferUpdated) {
+			//display.clear();
+			//display.println(buffer);
+			u8x8.drawString(0, 0, buffer);
+			printBufferUpdated = false;
+		}
+		static char s[BUFFER_SIZE];
+		format_to_buffer(s, BUFFER_SIZE, "dt = %04d", (int) deltatime_ms);
+		u8x8.drawString(0, 20, s);
+		printOled = false;
 	}
+	loopDisplay();
 	delay(15);
 }
