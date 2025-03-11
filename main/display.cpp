@@ -1,31 +1,48 @@
 #include "display.h"
+#include "state.h"
+#include "pinout.h"
+#include "utils.h"
+
+static bool available = false;
+static u64_t lastOledUpdate = 0;
 
 // Create a display instance
-U8X8_SSD1306_128X64_NONAME_SW_I2C u8x8(/* clock=*/ 22, /* data=*/ 21, /* reset=*/ U8X8_PIN_NONE);
+static U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(/* clock=*/ PIN_DISPLAY_CLK, /* data=*/ PIN_DISPLAY_DATA, /* reset=*/ U8X8_PIN_NONE);
 
 void setupDisplay() {
+	u8x8.setBusClock(800000);
     u8x8.begin();
-    u8x8.setFont(u8x8_font_chroma48medium8_r);
+	u8x8.setFont(u8x8_font_amstrad_cpc_extended_f);
+	int r = 0;
+	u8x8.drawString(11, r++, "gp");
+	u8x8.drawString(0, r++, "dt");
+	u8x8.drawString(0, r++, "servo1");
+	u8x8.drawString(0, r++, "servo2");
+	available = true;
 }
 
-void loopDisplay() {
-    if(printOled) {
-        u8x8.clearLine(0);
-        u8x8.setCursor(0,0);
-        u8x8.print("Neck:");
-        u8x8.print(neckPositionCurrent);
-        u8x8.print(" Target:");
-        u8x8.print(neckPositionTarget);
-        u8x8.print(" Speed:");
-        u8x8.print(neckSpeedCurrent);
-        u8x8.print(" Target:");
-        u8x8.print(neckSpeedTarget);
-        u8x8.print(" Zero:");
-        u8x8.print(neckZeroFound);
-        u8x8.print(" Hall:");
-        u8x8.print(hallSensor);
-        u8x8.print(" Sound:");
-        u8x8.print(sound);
-        printOled = false;
-    }
+bool loopDisplay() {
+	if(!available) return false;
+	if(timestamp_ms - lastOledUpdate > 500) {
+		lastOledUpdate = timestamp_ms;
+		static char b0[BUFFER_SIZE];
+		int time = (int)(timestamp_ms / 1000);
+		static int lastDisplayTime = 0;
+		int r = 0;
+
+		format_to_buffer(b0, BUFFER_SIZE, "%08d", time);
+		u8x8.drawString(0, r, b0);
+		format_to_buffer(b0, BUFFER_SIZE, "%01d", (int)gamepadCount);
+		u8x8.drawString(14, r++, b0);
+		format_to_buffer(b0, BUFFER_SIZE, "%03d-%03d", (int) deltatime_ms, (int)lastDisplayTime);
+		u8x8.drawString(8, r++, b0);
+		format_to_buffer(b0, BUFFER_SIZE, "%03d", (int)servo1value);
+		u8x8.drawString(8, r++, b0);
+		format_to_buffer(b0, BUFFER_SIZE, "%03d", (int)servo2value);
+		u8x8.drawString(8, r++, b0);
+
+		lastDisplayTime = millis() - timestamp_ms;
+		return true;
+	}
+	return false;
 } 

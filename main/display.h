@@ -3,8 +3,9 @@
 
 #include <Arduino.h>
 #include "../components/U8g2_Arduino/src/U8x8lib.h"
+#include "state.h"
 
 void setupDisplay();
-void loopDisplay();
+bool loopDisplay();
 
 #endif // DISPLAY_H 
