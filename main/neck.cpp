@@ -26,8 +26,8 @@ void IRAM_ATTR hallSensorRising() {
 }
 
 void setupNeckZeroSensor() {
-	pinMode(PIN_HALL_SENSOR, INPUT);
-	attachInterrupt(digitalPinToInterrupt(PIN_HALL_SENSOR), hallSensorRising, CHANGE);
+	pinMode(PIN_NECK_ZERO_SENSOR, INPUT);
+	attachInterrupt(digitalPinToInterrupt(PIN_NECK_ZERO_SENSOR), hallSensorRising, CHANGE);
 }
 
 void setupNeckMotorDrive() {
@@ -105,6 +105,7 @@ void clearNeckPosition() {
 	ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
 	neckPositionOverflow = 0;
 	neckPositionTarget = 0;
+	neckPositionCurrent = 0;
 }
 
 void zeroFound() {
@@ -119,8 +120,8 @@ float shortestAngleDifference(float angle1, float angle2) {
 	return (delta < -180) ? delta + 360 : delta;
 }
 
-void updateNeckPosition(float currentPos) {
-	int e = shortestAngleDifference(neckPositionTarget, currentPos);
+void updateNeckPosition() {
+	int e = shortestAngleDifference(neckPositionTarget, neckPositionCurrent);
 	int dir = e >= 0 ? 1 : -1;
 	int delta = abs(e);
 	if(delta <= 1) {
@@ -240,15 +241,12 @@ void loopNeck() {
 			detachInterrupt(digitalPinToInterrupt(PIN_NECK_ZERO_SENSOR));
 			zeroFound();
 		}
-	} else {
-		int pulse_count = 0;
-		ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
-		auto tot = neckPositionOverflow + pulse_count;
-		auto rot = tot / ENC_TICK_PER_NECK_ROTATION;
-		auto deg = 360.0f * (float) (tot % ENC_TICK_PER_NECK_ROTATION) / (float) (ENC_TICK_PER_NECK_ROTATION);
-		//if(printSerialLimited) Serial.printf("Pulse count: ticks:%d overflowed:%ld total:%ld rot: %ld deg: %.2f (target %.2f)\n", pulse_count, neckPositionOverflow, neckPositionOverflow + pulse_count, rot, deg, neckPositionTarget);
-		updateNeckPosition(neckPositionCurrent);
 	}
-
-
+	int pulse_count = 0;
+	ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
+	auto tot = neckPositionOverflow + pulse_count;
+	auto rot = tot / ENC_TICK_PER_NECK_ROTATION;
+	neckPositionCurrent = 360.0f * (float) (tot % ENC_TICK_PER_NECK_ROTATION) / (float) (ENC_TICK_PER_NECK_ROTATION);
+	//if(printSerialLimited) Serial.printf("Pulse count: ticks:%d overflowed:%ld total:%ld rot: %ld deg: %.2f (target %.2f)\n", pulse_count, neckPositionOverflow, neckPositionOverflow + pulse_count, rot, deg, neckPositionTarget);
+	updateNeckPosition();
 }

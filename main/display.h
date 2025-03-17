@@ -6,6 +6,6 @@
 #include "state.h"
 
 void setupDisplay();
-bool loopDisplay();
+bool loopDisplay(int delay);
 
 #endif // DISPLAY_H 

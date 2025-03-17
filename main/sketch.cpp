@@ -1,21 +1,21 @@
 #include "sdkconfig.h"
-#include "display.h"
-#include "pinout.h"
-
 #include <Arduino.h>
 #include <Bluepad32.h>
-#include "../components/arduino-CAN/src/CAN.h"
-#include "../components/Adafruit_Soundboard_library/Adafruit_Soundboard.h"
+
+#include "display.h"
 #include "neck.h"
 #include "sound.h"
 #include "servos.h"
+#include "touch.h"
+#include "can.h"
 
-static bool enableDisplay = true;
+static bool enableCAN = true;
 static bool enableBluetooth = true;
-static bool enableServos = true;
+static bool enableTouch = true;
 static bool enableNeck = true;
-static bool enableSound = false;
-static bool enableCAN = false;
+static bool enableServos = true;
+static bool enableSound = true;
+static bool enableDisplay = true;
 
 //
 // README FIRST, README FIRST, README FIRST
@@ -114,32 +114,6 @@ void processGamepad(ControllerPtr ctl) {
     if(ctl->buttons() & BUTTON_A) {
 		playNextSound();
 	}
-
-    if(ctl->x()) {
-        Console.printf("Sending CAN packet\n");
-        CAN.beginPacket(0x12);
-        CAN.write('h');
-        CAN.write('e');
-        CAN.write('l');
-        CAN.write('l');
-        CAN.write('o');
-        CAN.endPacket();
-    }
-
-    if(ctl->y()) {
-        Console.printf("Sending ext CAN packet\n");
-        CAN.beginExtendedPacket(0xabcdef);
-        CAN.write('w');
-        CAN.write('o');
-        CAN.write('r');
-        CAN.write('l');
-        CAN.write('d');
-        CAN.endPacket();
-    }
-
-    // Another way to query controller data is by getting the buttons() function.
-    // See how the different "dump*" functions dump the Controller info.
-    //dumpGamepad(ctl);
 }
 
 void processControllers() {
@@ -171,7 +145,7 @@ void setupBluetooth() {
 	// Calling "forgetBluetoothKeys" in setup() just as an example.
 	// Forgetting Bluetooth keys prevents "paired" gamepads to reconnect.
 	// But it might also fix some connection / re-connection issues.
-	BP32.forgetBluetoothKeys();
+	 // BP32.forgetBluetoothKeys();
 
 	// Enables mouse / touchpad support for gamepads that support them.
 	// When enabled, controllers like DualSense and DualShock4 generate two connected devices:
@@ -186,30 +160,7 @@ void setupBluetooth() {
 	BP32.enableBLEService(false);
 }
 
-void setupCAN() {
-	CAN.setPins(PIN_CAN_RX, PIN_CAN_TX);
-	if (!CAN.begin(100E3)) {
-		Console.println("Starting CAN failed!");
-		delay(2000);
-	}
-}
-
-// Arduino setup function. Runs in CPU 1
-void setup() {
-	Serial.begin(115200);
-	Console.printf("Firmware: %s\n", BP32.firmwareVersion());
-	if(enableDisplay) setupDisplay();
-	if(enableBluetooth) setupBluetooth();
-	if(enableServos) setupServos();
-	if(enableNeck) setupNeck();
-	if(enableSound) setupSound();
-	if(enableCAN) setupCAN();
-	updateTime();
-}
-
-// Arduino loop function. Runs in CPU 1.
-void loop() {
-	updateTime();
+void loopBluetooth() {
 	// This call fetches all the controllers' data.
 	// Call this function in your main loop.
 	bool dataUpdated = BP32.update();
@@ -223,10 +174,33 @@ void loop() {
 	// https://stackoverflow.com/questions/66278271/task-watchdog-got-triggered-the-tasks-did-not-reset-the-watchdog-in-time
 
 	//     vTaskDelay(1);
+}
 
+// Arduino setup function. Runs in CPU 1
+void setup() {
+	Serial.begin(115200);
+	Console.printf("Firmware: %s\n", BP32.firmwareVersion());
+	if(enableDisplay) setupDisplay();
+	loopDisplay(0);
+	if(enableCAN) setupCAN();
+	if(enableBluetooth) setupBluetooth();
+	if(enableTouch) setupTouch();
+	if(enableNeck) setupNeck();
+	if(enableServos) setupServos();
+	if(enableSound) setupSound();
+	loopDisplay(0);
+	updateTime();
+}
+
+// Arduino loop function. Runs in CPU 1.
+void loop() {
+	updateTime();
+	loopCAN();
+	loopBluetooth();
+	loopTouch();
 	loopNeck();
-	printStateToSerial();
-	if(!loopDisplay()) {
+	printStateToSerial(1000);
+	if(!loopDisplay(900)) {
 		delay(15);
 	}
 }

@@ -110,6 +110,23 @@
                     "units": "",
                     "value": "--.--",
                     "widget": "compass"
+                },
+                {
+                    "alarm": 0,
+                    "fft": false,
+                    "fftSamples": 256,
+                    "fftSamplingRate": 100,
+                    "graph": true,
+                    "index": 7,
+                    "led": true,
+                    "ledHigh": 15,
+                    "log": false,
+                    "max": 100,
+                    "min": 0,
+                    "title": "Touch7",
+                    "units": "",
+                    "value": "--.--",
+                    "widget": ""
                 }
             ],
             "title": "Values",
