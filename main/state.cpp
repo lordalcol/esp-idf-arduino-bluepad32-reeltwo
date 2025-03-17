@@ -42,6 +42,7 @@ void printStateToSerial(int delay) {
 		lastTimestamp = now;
 	}
 	Serial.print('$');
+	Serial.print(timestamp_ms); Serial.print(',');
 	Serial.print(deltatime_ms); Serial.print(',');
 	Serial.print(neckZeroFound); Serial.print(',');
 	Serial.print(normalizeDegrees(neckPositionCurrent)); Serial.print(',');
