@@ -5,22 +5,16 @@
 #include "utils.h"
 #include "driver/twai.h"
 
-// Pins used to connect to CAN bus transceiver:
-#define RX_PIN 4
-#define TX_PIN 5
-
 // Interval:
 #define TRANSMIT_RATE_MS 100
 #define POLLING_RATE_MS 100
-
-unsigned long previousMillis = 0;  // will store last time a message was send
 
 int MY_ESP32_CAN_ID = 2;
 
 void setupCAN() {
 
 	// Initialize configuration structures using macro initializers
-	twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)TX_PIN, (gpio_num_t)RX_PIN, TWAI_MODE_NORMAL);
+	twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)PIN_CAN_TX, (gpio_num_t)PIN_CAN_RX, TWAI_MODE_NORMAL);
 	twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();  //Look in the api-reference for other speed sets.
 	twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -30,7 +24,6 @@ void setupCAN() {
 //			.single_filter = true  // Use a single filter for both standard and extended IDs
 //	};
 
-	// Install TWAI driver
 	if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
 		Serial.println("Driver installed");
 	} else {
@@ -38,7 +31,6 @@ void setupCAN() {
 		return;
 	}
 
-	// Start TWAI driver
 	if (twai_start() == ESP_OK) {
 		Serial.println("Driver started");
 	} else {
@@ -46,7 +38,6 @@ void setupCAN() {
 		return;
 	}
 
-	// Reconfigure alerts to detect TX alerts and Bus-Off errors
 	uint32_t alerts_to_enable = TWAI_ALERT_RX_DATA | TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_TX_IDLE | TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_ERROR;
 	if (twai_reconfigure_alerts(alerts_to_enable, NULL) == ESP_OK) {
 		Serial.println("CAN Alerts reconfigured");
@@ -79,7 +70,7 @@ static void print_message(twai_message_t &message, bool received) {
 
 static void send_message() {
 	// Send message
-	static u8_t c = 0;
+	static unsigned char c = 0;
 	c++;
 	// Configure message to transmit
 	twai_message_t message =  {0};
