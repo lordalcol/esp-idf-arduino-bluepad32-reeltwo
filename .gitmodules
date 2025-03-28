@@ -4,3 +4,6 @@
 [submodule "components/Reeltwo"]
 	path = components/Reeltwo
 	url = https://github.com/lordalcol/Reeltwo
+[submodule "components/Adafruit_Soundboard_library"]
+	path = components/Adafruit_Soundboard_library
+	url = https://github.com/lordalcol/Adafruit_Soundboard_library
