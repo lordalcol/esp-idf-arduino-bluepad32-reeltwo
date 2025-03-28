@@ -1,6 +1,7 @@
 #include "sound.h"
 #include "pinout.h"
 #include "state.h"
+#define MAXFILES 128
 #include "../components/Adafruit_Soundboard_library/Adafruit_Soundboard.h"
 
 HardwareSerial dfSD(1);
