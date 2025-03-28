@@ -5,7 +5,6 @@
 #include "display.h"
 #include "neck.h"
 #include "sound.h"
-#include "servos.h"
 #include "touch.h"
 #include "can.h"
 #include "pinout.h"
@@ -60,7 +59,6 @@ static bool enableCAN = false;
 static bool enableBluetooth = true;
 static bool enableTouch = true;
 static bool enableNeck = true;
-static bool enableServos = false;
 static bool enableSound = true;
 static bool enableDisplay = true;
 
@@ -170,8 +168,6 @@ void processGamepad(ControllerPtr ctl) {
     // By query each button individually:
     //  a(), b(), x(), y(), l1(), etc...
 
-    processServos(ctl);
-
 	if(neckZeroFound) {
 		//neckSpeedTarget = map(ctl->axisRX(), -511, 512, -NECK_MAX_SPEED, NECK_MAX_SPEED);
 		auto x = ctl->axisRX();
@@ -264,7 +260,6 @@ void setup() {
 	if(enableBluetooth) setupBluetooth();
 	if(enableTouch) setupTouch();
 	if(enableNeck) setupNeck();
-	if(enableServos) setupServos();
 	if(enableSound) setupSound();
 	loopDisplay(0);
 	updateTime();
