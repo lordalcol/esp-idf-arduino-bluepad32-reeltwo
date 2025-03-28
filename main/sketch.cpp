@@ -8,14 +8,81 @@
 #include "servos.h"
 #include "touch.h"
 #include "can.h"
+#include "pinout.h"
 
-static bool enableCAN = true;
+#define USE_DEBUG
+#include "../components/Reeltwo/src/ReelTwo.h"
+//#define USE_VERBOSE_SERVO_DEBUG
+#define USE_SERVO_DEBUG
+#include "../components/Reeltwo/src/ServoDispatchDirect.h"
+#include "../components/Reeltwo/src/ServoSequencer.h"
+#include "../components/Reeltwo/src/core/Animation.h"
+#include "../components/Reeltwo/src/core/Marcduino.h"
+
+int32_t strtol(const char *cmd, const char **endptr)
+{
+    bool sign = false;
+    int32_t result = 0;
+    if (*cmd == '-')
+    {
+        cmd++;
+        sign = true;
+    }
+    while (isdigit(*cmd))
+    {
+        result = result * 10L + (*cmd - '0');
+        cmd++;
+    }
+    *endptr = cmd;
+    return (sign) ? -result : result;
+}
+
+bool numberparams(const char *cmd, uint8_t &argcount, int32_t *args, uint8_t maxcount)
+{
+    for (argcount = 0; argcount < maxcount; argcount++)
+    {
+        args[argcount] = strtol(cmd, &cmd);
+        if (*cmd == '\0')
+        {
+            argcount++;
+            return true;
+        }
+        else if (*cmd != ',')
+        {
+            return false;
+        }
+        cmd++;
+    }
+    return true;
+}
+
+static bool enableCAN = false;
 static bool enableBluetooth = true;
 static bool enableTouch = true;
 static bool enableNeck = true;
-static bool enableServos = true;
+static bool enableServos = false;
 static bool enableSound = true;
 static bool enableDisplay = true;
+
+const ServoSettings servoSettings[] PROGMEM = {
+        { PIN_SERVO2, 500, 2400, 0x1000 },
+};
+
+ServoDispatchDirect<SizeOfArray(servoSettings)> servoDispatch(servoSettings);
+ServoSequencer servoSequencer(servoDispatch);
+AnimationPlayer player(servoSequencer);
+
+////////////////
+
+MARCDUINO_ACTION(CloseAllPanels, :CL01, ({
+    SEQUENCE_PLAY_ONCE(servoSequencer, SeqPanelAllClose, 0x1000);
+}))
+
+////////////////
+
+MARCDUINO_ACTION(OpenAllPanels, :OP01, ({
+    SEQUENCE_PLAY_ONCE(servoSequencer, SeqPanelAllOpen, 0x1000);
+}))
 
 //
 // README FIRST, README FIRST, README FIRST
@@ -114,6 +181,15 @@ void processGamepad(ControllerPtr ctl) {
     if(ctl->buttons() & BUTTON_A) {
 		playNextSound();
 	}
+    if(ctl->buttons() & BUTTON_B) {
+        Marcduino::processCommand(player, ":CL01");
+	}
+    if(ctl->buttons() & BUTTON_Y) {
+        Marcduino::processCommand(player, ":OP01");
+	}
+    if(ctl->buttons() & BUTTON_X) {
+        Marcduino::processCommand(player, ":XX99");
+	}
 }
 
 void processControllers() {
@@ -178,7 +254,9 @@ void loopBluetooth() {
 
 // Arduino setup function. Runs in CPU 1
 void setup() {
-	Serial.begin(115200);
+    REELTWO_READY();
+    SetupEvent::ready();
+	//Serial.begin(115200);
 	Console.printf("Firmware: %s\n", BP32.firmwareVersion());
 	if(enableDisplay) setupDisplay();
 	loopDisplay(0);
@@ -194,6 +272,7 @@ void setup() {
 
 // Arduino loop function. Runs in CPU 1.
 void loop() {
+    AnimatedEvent::process();
 	updateTime();
 	loopCAN();
 	loopBluetooth();
@@ -201,6 +280,6 @@ void loop() {
 	loopNeck();
 	printStateToSerial(1000);
 	if(!loopDisplay(900)) {
-		delay(15);
+		delay(1);
 	}
 }

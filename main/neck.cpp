@@ -10,7 +10,7 @@
 
 // Motor PWM settings
 #define MOTOR_PWM_FREQ 30000
-#define MOTOR_PWM_CHANNEL 4
+#define MOTOR_PWM_CHANNEL 16
 #define MOTOR_PWM_RESOLUTION 8
 
 #define ENC_TICK_PER_NECK_ROTATION (19687 / 2)

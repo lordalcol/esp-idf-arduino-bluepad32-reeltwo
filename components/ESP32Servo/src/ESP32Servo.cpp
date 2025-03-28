@@ -159,6 +159,7 @@ void Servo::write(int value)
 
         value = map(value, 0, 180, this->min, this->max);
     }
+    Serial.printf("Writing %d to PIN %d\n", value, this->pinNumber);
     this->writeMicroseconds(value);
 }
 
@@ -266,5 +267,3 @@ int Servo::ticksToUs(int ticks)
 {
     return (int)((double)ticks * ((double)REFRESH_USEC / (double)this->timer_width_ticks)/(((double)REFRESH_CPS)/50.0));
 }
-
- 
